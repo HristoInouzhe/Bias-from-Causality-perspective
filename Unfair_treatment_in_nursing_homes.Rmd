@@ -1,0 +1,391 @@
+---
+title: 'Unfair treatment in nursing homes: A toy example'
+author: "Hristo Inouzhe"
+date: "`r Sys.Date()`"
+output: html_document
+references:
+- id: biasNursing
+  title: 'A study on group fairness in healthcare outcomes for nursing home residents during the COVID-19 pandemic in the Basque Country'
+  author:
+  - family: Inouzhe
+    given: Hristo
+  - family: Barrio
+    given: Irantzu
+  - family: Rodríguez-Álvarez
+    given: María Xosé
+  - family: Gordaliza
+    given: Paula
+  - family: Bengoechea
+    given: Itxaso
+  - family: Quintana
+    given: José María
+  URL: 'https://arxiv.org/abs'
+  type: article-journal
+  issued:
+    year: 2023
+- id: sensAnalysis
+  title: 'Sense and sensitivity analysis: Simple post-hoc analysis of bias due to unobserved confounding'
+  author:
+  - family: Veitch
+    given: Victor
+  - family: Zaveri
+    given: Anisha
+  URL: 'https://arxiv.org/abs/2003.01747'
+  type: article-journal
+  issued:
+    year: 2020
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+# Introduction
+
+This is a short tutorial based on the article @biasNursing. Our main goal is for the reader to be able to apply the methods to their own data. Hence, we provide all the necessary tools with meaningful examples.
+
+<http://rmarkdown.rstudio.com>
+
+We start by requiring libraries and sourcing functions:
+```{r libraries, message = FALSE}
+require(dplyr)
+require(transport)
+require(ggplot2)
+require(reshape2)
+require(cubature)
+require(ks)
+source("trimmedMatching.R")
+source("totalVariationAnalysis.R")
+source("weightedMeansDifference.R")
+source("wasserDistance.R")
+```
+
+Since data protection restrict us from using the data in @biasNursing we use a synthetic dataset generated artificially to imitate the data, where the covariates of interest are $\mathbf{X}=\{age, Charlson_index, time_to_positive, dementia\}$, the treatment variable $Z$ is $nursing_home$ and the output variable $Y$ is hospitalisation. 
+
+```{r dataNursing}
+dataNursingHomes <- read.csv("nursing_home_synthetic.csv")
+head(dataNursingHomes)
+```
+
+# Matching with Euclidean distance
+
+To perform a matching based on the (squared) Euclidean distance we compute it, where we also make a normalisation to equiparate the different variables 
+```{r distEuclidean}
+dist.Euclidean <- as.matrix(dist(cbind((dataNursingHomes$age - 60) / (105 - 60),
+                                            dataNursingHomes$Charlson_index / 20,
+                                            dataNursingHomes$time_to_positive / 121,
+                                            dataNursingHomes$dementia
+))^2)
+```
+The matching procedure is based on solving a particular transport problem where trimming on both the origin and destination distributions is allowed. One has to indicate the data to be used, which contain both the origin and destination samples. The (d power) of the distance matrix corresponding to the data, which will be used as a cost matrix in the transport problem. The trimming (down-weighting level) allowed on the origin and destination samples, respectively. Finally, one must supply the name of the treatment variable and the coding of its two levels.
+```{r euclideanMatching}
+trimmied.sample.euc.1 <- trimmedMatching(dataNursingHomes, dist.Euclidean,
+                                     trimm.level.majority =
+                                       (1 - sum(dataNursingHomes$nursing_home == 1) / 
+                                          sum(dataNursingHomes$nursing_home == 0)),
+                                     strata = "nursing_home", strata.levels = c(0, 1))
+trimmied.sample.euc.2 <- trimmedMatching(dataNursingHomes,dist.Euclidean,
+                                     trimm.level.majority = 0.6, 
+                                     # trimm.level.majority = 1.01 * (1 - sum(dataNursingHomes$nursing_home == 1) /
+                                     #                      sum(dataNursingHomes$nursing_home == 0))
+                                     trimm.level.minority = 0.3,
+                                     # trimm.level.minority = 0.1
+                                     strata = "nursing_home", strata.levels = c(0, 1))
+```
+
+# Matching with propensity distance
+
+The Euclidean distance in the original attributes is just one possible choice. A popular one is to use distance in propensity score $e(\mathbf{X})=E(Z|\mathbf(X))$. To estimate the conditional expectation we used Python and provide a Jupyter Lab Notebook as the companion file Sensitivity_Analysis-toy_example.ipynb (titled Propensity score estimation and Sensitivity Analysis for bias in Nursing Homes).  
+
+We just load the propensity score, define a distance matrix based on it and compute the corresponding inverse weights. 
+```{r propensityLoad}
+# Load propensity computed with python 
+
+propensity <- read.table("propensity_period_1_toy.csv",
+                                  quote="\"", comment.char="")
+
+# Computation of the distance matrix based on propensity scores
+
+dist.propensity <- as.matrix(dist(propensity))
+
+weight.g.propensity <- dataNursingHomes$nursing_home / propensity +
+  (1 - dataNursingHomes$nursing_home) / (1 - propensity)
+
+```
+After that, as for the Euclidean case, we compute weighted subsamples based on the solution of a trimmed optimal transport problem. 
+```{r propensityMatching}
+trimmied.sample.prop.1 <- trimmedMatching(dataNursingHomes,dist.propensity,
+                                     trimm.level.majority =
+                                       (1 - sum(dataNursingHomes$nursing_home == 1) / 
+                                          sum(dataNursingHomes$nursing_home == 0)),
+                                     strata = "nursing_home", strata.levels = c(0, 1))
+trimmied.sample.prop.2 <- trimmedMatching(dataNursingHomes,dist.propensity,
+                                     trimm.level.majority = 0.6, 
+                                     # trimm.level.majority = 1.01 * (1 - sum(dataNursingHomes$nursing_home == 1) /
+                                     #                      sum(dataNursingHomes$nursing_home == 0))
+                                     trimm.level.minority = 0.3,
+                                     # trimm.level.minority = 0.1
+                                     strata = "nursing_home", strata.levels = c(0, 1))
+```
+# Average Treatment Effect (ATE) estimates
+With the previous weighted subsamples and some alternative estimates obtained in Propensity score estimation and Sensitivity Analysis for bias in Nursing Homes one obtains the following ATEs.
+```{r ateComputation}
+ate.table <- array(dim = c(9,2))
+ate.python <- read.csv("ate_python.csv", header = FALSE, sep = ",")
+
+ate.table[1, ] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[which(dataNursingHomes$nursing_home == 0)],
+                      dataNursingHomes$hospitalisation[which(dataNursingHomes$nursing_home == 1)],
+                      rep(1, sum(dataNursingHomes$nursing_home == 0)),
+                      rep(1, sum(dataNursingHomes$nursing_home == 1))))
+ate.table[2, ] <- as.numeric(ate.python[1, ])
+ate.table[3,] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[trimmied.sample.euc.1$trimmedMajorityClass],
+                      dataNursingHomes$hospitalisation[trimmied.sample.euc.1$trimmedMinorityClass],
+                      trimmied.sample.euc.1$trimmedMajorityClass.weight,
+                      trimmied.sample.euc.1$trimmedMinorityClass.weight))
+ate.table[4, ] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[trimmied.sample.euc.2$trimmedMajorityClass],
+                      dataNursingHomes$hospitalisation[trimmied.sample.euc.2$trimmedMinorityClass],
+                      trimmied.sample.euc.2$trimmedMajorityClass.weight,
+                      trimmied.sample.euc.2$trimmedMinorityClass.weight))
+
+ate.table[5, ] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[trimmied.sample.prop.1$trimmedMajorityClass],
+                      dataNursingHomes$hospitalisation[trimmied.sample.prop.1$trimmedMinorityClass],
+                      trimmied.sample.prop.1$trimmedMajorityClass.weight,
+                      trimmied.sample.prop.1$trimmedMinorityClass.weight))
+ate.table[6, ] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[trimmied.sample.prop.2$trimmedMajorityClass],
+                      dataNursingHomes$hospitalisation[trimmied.sample.prop.2$trimmedMinorityClass],
+                      trimmied.sample.prop.2$trimmedMajorityClass.weight,
+                      trimmied.sample.prop.2$trimmedMinorityClass.weight))
+ate.table[7, ] <- as.numeric(ate.python[2, ])
+ate.table[8, ] <- as.numeric(ate.python[3, ])
+ate.table[9, ] <- as.numeric(weightedMeansDifference(dataNursingHomes$hospitalisation[which(dataNursingHomes$nursing_home == 0)],
+                      dataNursingHomes$hospitalisation[which(dataNursingHomes$nursing_home == 1)],
+                      weight.g.propensity$V1[which(dataNursingHomes$nursing_home == 0)],
+                      weight.g.propensity$V1[which(dataNursingHomes$nursing_home == 1)]))
+colnames(ate.table) <- c("ATE", "Plus-minus")
+rownames(ate.table) <- c("Unmatched", "Unmatched 2", "Matched Euc", "Matched Euc 2", "Matched Prop", "Matched Prop 2",
+                                     "Inverse Weighting", "Inverse Weighting 2", "Propensity Weighted")
+ate.table
+```
+# ATE estimates quality diagnostics
+To check the good behaviour of the ATE estimates used in the previous section we need to rely on some diagnostic procedures.
+
+## Porpensity score distributions
+A first one is to visually compare the distributions of the propensity scores estimates for each class, nursing home residents (Z=1) and non-residents (Z=0), for all the esimates.
+```{r plottingPropensity}
+plot(density(propensity$V1[which(dataNursingHomes$nursing_home == 0)]),
+     main = "Comparison of propensity distributions",
+     xlab = "Propensity", ylim = c(0, 6), col = "#F8766D", lwd = 8,
+     cex.main = 1.4, cex.axis = 1, cex.lab = 1.2)
+lines(density(propensity$V1[which(dataNursingHomes$nursing_home == 1)]), lty = 2, col = "#F8766D", lwd = 8)
+lines(density(propensity$V1[trimmied.sample.prop.2$trimmedMajorityClass],
+              weights = trimmied.sample.prop.2$trimmedMajorityClass.weight),
+      col = "#00BA38", lwd = 7)
+lines(density(propensity$V1[trimmied.sample.prop.2$trimmedMinorityClass],
+              weights = trimmied.sample.prop.2$trimmedMinorityClass.weight),
+      col = "#00BA38", lty = 2, lwd = 7)
+lines(density(propensity$V1[trimmied.sample.prop.1$trimmedMajorityClass],
+              weights = trimmied.sample.prop.1$trimmedMajorityClass.weight),
+      col = "#B79F00", lwd = 7)
+lines(density(propensity$V1[trimmied.sample.prop.1$trimmedMinorityClass],
+              weights = trimmied.sample.prop.1$trimmedMinorityClass.weight),
+      col = "#B79F00", lty = 2, lwd = 7)
+lines(density(propensity$V1[trimmied.sample.euc.1$trimmedMajorityClass],
+              weights = trimmied.sample.euc.1$trimmedMajorityClass.weight),
+      col = "#00BFC4", lwd = 7)
+lines(density(propensity$V1[trimmied.sample.euc.1$trimmedMinorityClass],
+              weights = trimmied.sample.euc.1$trimmedMinorityClass.weight),
+      col = "#00BFC4", lty = 2, lwd = 7)
+lines(density(propensity$V1[trimmied.sample.euc.2$trimmedMajorityClass],
+              weights = trimmied.sample.euc.2$trimmedMajorityClass.weight),
+      col = "#619CFF", lwd = 7)
+lines(density(propensity$V1[trimmied.sample.euc.2$trimmedMinorityClass],
+              weights = trimmied.sample.euc.2$trimmedMinorityClass.weight),
+      col = "#619CFF", lty = 2, lwd = 7)
+lines(density(propensity$V1[dataNursingHomes$nursing_home == 0],
+              weights = weight.g.propensity$V1[dataNursingHomes$nursing_home == 0] / 
+                sum(weight.g.propensity$V1[dataNursingHomes$nursing_home == 0])),
+      col = "#F564E3", lwd = 7)
+lines(density(propensity$V1[dataNursingHomes$nursing_home == 1],
+              weights = weight.g.propensity$V1[dataNursingHomes$nursing_home == 1] /
+                sum(weight.g.propensity$V1[dataNursingHomes$nursing_home == 1])), 
+      col = "#F564E3", lty = 2,lwd = 7)
+
+```
+```{r legendPropensity, echo=FALSE}
+plot.new()
+legend(x = 0, y = 1.02, legend = c("No", "Yes"), lty = c(1, 2), lwd = rep(2, 2),
+       title = "Nursing home:", horiz = TRUE)
+legend(x = 0, y = 0.75, legend = c("Unmathced", "Matched Prop", "Matched Prop 2",
+                                     "Matched Euc", "Matched Euc 2", "Inverse Weighting"),
+       fill = c("#F8766D", "#B79F00", "#00BA38", "#00BFC4", "#619CFF", "#F564E3"),
+       title = "Method")
+```
+
+Clearly we see that all methods are producing propensity distributions that are more similar than the original ones in red.
+
+## Total Variation distance (TVd) on the marginals
+Another possibility is to compare the marginal distributions on the original variables. We chose to this using the well known Total Varaition distance. The wrapper function, totalVariationAnalysis, estimates the 1D TVd's for discrete and continuous variables. Bellow are the examples for the corresponding ATEs. 
+```{r totalVarAnalysisEuc}
+vars_of_interest = names(dataNursingHomes)[1:4]
+total.variation.0 <- totalVariationAnalysis(vars = vars_of_interest, data = dataNursingHomes,
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"))
+total.variation.euc.1 <- totalVariationAnalysis(vars = vars_of_interest, data = dataNursingHomes[c(trimmied.sample.euc.1$trimmedMajorityClass,
+                                                            trimmied.sample.euc.1$trimmedMinorityClass), ],
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"),
+                                                        weights.g = c(trimmied.sample.euc.1$trimmedMajorityClass.weight,
+                                                          trimmied.sample.euc.1$trimmedMinorityClass.weight))
+total.variation.euc.2 <- totalVariationAnalysis(vars = vars_of_interest, data = dataNursingHomes[c(trimmied.sample.euc.2$trimmedMajorityClass,
+                                                            trimmied.sample.euc.2$trimmedMinorityClass), ],
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"),
+                                                        weights.g = c(trimmied.sample.euc.2$trimmedMajorityClass.weight,
+                                                          trimmied.sample.euc.2$trimmedMinorityClass.weight))
+
+```
+
+```{r totalVarAnalysisProp}
+total.variation.prop.0 <- totalVariationAnalysis(vars = vars_of_interest, data = dataNursingHomes,
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"),
+                                                 weights.g = weight.g.propensity$V1)
+total.variation.prop.1 <- totalVariationAnalysis(vars = vars_of_interest, data =
+                                                   dataNursingHomes[c(trimmied.sample.prop.1$trimmedMajorityClass,
+                                                            trimmied.sample.prop.1$trimmedMinorityClass), ],
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"),
+                                                        weights.g = c(trimmied.sample.prop.1$trimmedMajorityClass.weight,
+                                                          trimmied.sample.prop.1$trimmedMinorityClass.weight))
+total.variation.prop.2 <- totalVariationAnalysis(vars = vars_of_interest, data =
+                                                   dataNursingHomes[c(trimmied.sample.prop.2$trimmedMajorityClass,
+                                                            trimmied.sample.prop.2$trimmedMinorityClass), ],
+                                                        strata = "nursing_home", strata.levels = c(0, 1),
+                                                        vars_cont = c("age", "time_to_positive"),
+                                                        weights.g = c(trimmied.sample.prop.2$trimmedMajorityClass.weight,
+                                                          trimmied.sample.prop.2$trimmedMinorityClass.weight))
+```
+
+```{r plotingTVd}
+dataPlot <- data.frame(variable   =  vars_of_interest,
+                       Unmatched  = total.variation.0,
+                       "Match Prop"   = total.variation.prop.1,
+                       "Match Prop 2" = total.variation.prop.2,
+                       "Match Euc"   = total.variation.euc.1,
+                       "Match Euc 2" = total.variation.euc.2,
+                       "Inv Weight" = total.variation.prop.0
+)
+dataPlot_Melt <- melt(data          = dataPlot,
+                      id.vars       = c("variable"),
+                      variable.name = "Method",
+                      value.name    = "Total variation distance")
+varNames <- as.character(dataPlot$variable)[order(dataPlot$Unmatched)]
+dataPlot_Melt$variable <- factor(dataPlot_Melt$variable,
+                                 levels = varNames)
+
+ggplot(data = dataPlot_Melt,
+       mapping = aes(x = variable, y = `Total variation distance`, group = Method, color = Method)) +
+  geom_line(size = 2.5) +
+  geom_point(size = 3.5) +
+  coord_flip(ylim = c(0, 0.55)) +
+  theme_bw() + 
+  ggtitle ("Marginal TVd comparison") +
+  theme(plot.title = element_text(color="black", size=24, face="bold.italic"),
+        # legend.position = "none",
+        legend.key = element_blank(),
+        axis.text=element_text(size=20),
+        axis.title=element_text(size=22),
+        legend.text = element_text(size=14))
+```
+
+One can see that reductions are significant for all but time_to_positive. Hence, indeed, the 1D marginals for residents and non-residents are closer together than for the original data.
+
+## Multivariate similarity
+It is well known that similarity in marginals does not guarantee similarity in the multivariate space.  Here we use two approaches, one based on Maximum Mean Discrepancy (currently no weighting is allowed) and the other on the $d-$Wasserstein distance (allow weighted data). Details are provided in @biasNursing.
+
+We start with a particular normalisation of the data.
+```{r normalisedData}
+dataNursingHomesNorm <- dataNursingHomes[, 1:5]
+dataNursingHomesNorm[, 1] <- (dataNursingHomesNorm[, 1] - 60) / (105 - 60)
+dataNursingHomesNorm[, 2] <- dataNursingHomesNorm[, 1] / 20
+dataNursingHomesNorm[, 3] <- dataNursingHomesNorm[, 1] / 121
+```
+Then we compute the MMD statistics, for two different estimation strategies.
+```{r multivariateDistancesMMD, message = FALSE}
+# With all the variables used in the distance computations
+
+invisible(capture.output(
+  test.kmmd.toy.1 <-kernlab::kmmd(as.matrix(subset(dataNursingHomesNorm, nursing_home == 0))[, 1:4],
+                             as.matrix(subset(dataNursingHomesNorm, nursing_home == 1))[, 1:4], asymptotic = TRUE)
+  ))
+invisible(capture.output(
+  test.kmmd.toy.1.2 <- kernlab::kmmd(as.matrix(dataNursingHomesNorm[trimmied.sample.euc.1$trimmedMajorityClass, 1:4]),
+                               as.matrix(dataNursingHomesNorm[trimmied.sample.euc.1$trimmedMinorityClass, 1:4]), asymptotic = TRUE)
+  ))
+invisible(capture.output(
+  test.kmmd.toy.1.3 <- kernlab::kmmd(as.matrix(dataNursingHomesNorm[trimmied.sample.euc.2$trimmedMajorityClass, 1:4]),
+                               as.matrix(dataNursingHomesNorm[trimmied.sample.euc.2$trimmedMinorityClass, 1:4]), asymptotic = TRUE)
+  ))
+invisible(capture.output(
+  test.kmmd.toy.1.4 <- kernlab::kmmd(as.matrix(dataNursingHomesNorm[trimmied.sample.prop.1$trimmedMajorityClass, 1:4]),
+                               as.matrix(dataNursingHomesNorm[trimmied.sample.prop.1$trimmedMinorityClass, 1:4]), asymptotic = TRUE)
+  ))
+invisible(capture.output(
+  test.kmmd.toy.1.5 <- kernlab::kmmd(as.matrix(dataNursingHomesNorm[trimmied.sample.prop.2$trimmedMajorityClass, 1:4]),
+                               as.matrix(dataNursingHomesNorm[trimmied.sample.prop.2$trimmedMinorityClass, 1:4]), asymptotic = TRUE)
+  ))
+period.toy.1 <- data.frame('Reject_H0_MMD' = c(test.kmmd.toy.1@H0, test.kmmd.toy.1.2@H0, test.kmmd.toy.1.3@H0,
+                                       test.kmmd.toy.1.4@H0, test.kmmd.toy.1.5@H0),
+                       "Reject_H0_MMDAsymBoot" = c(test.kmmd.toy.1@AsympH0, test.kmmd.toy.1.2@AsympH0, test.kmmd.toy.1.3@AsympH0,
+                                 test.kmmd.toy.1.4@AsympH0, test.kmmd.toy.1.5@AsympH0))
+period.toy.1.stats <- rbind(test.kmmd.toy.1@mmdstats, test.kmmd.toy.1.2@mmdstats, test.kmmd.toy.1.3@mmdstats,
+                                           test.kmmd.toy.1.4@mmdstats, test.kmmd.toy.1.5@mmdstats)
+colnames(period.toy.1.stats) <- c("Statistic 1", "Statistic 2")
+rownames(period.toy.1.stats) <- c("Unmatched", "Matched Euc", "Matched Euc 2", "Matched Prop", "Matched Prop 2")
+period.toy.1.stats
+```
+And the 2-Wasserstein distance for the weighed (sub)samples.
+```{r multivariateDistanceWasserstein}
+period.1.stats.wasser <- array(dim = c(6, 1))
+dist.matrix <- as.matrix(dist(dataNursingHomesNorm[,-dim(dataNursingHomesNorm)[2]]))
+
+n.A <- sum(dataNursingHomesNorm$nursing_home == 0)
+n.B <- sum(dataNursingHomesNorm$nursing_home == 1)
+A.1 <- rep(1/n.A, n.A)
+B.1 <- rep(1/n.B, n.B)
+
+period.1.stats.wasser[1, ] <- wasserDistance(A.1, B.1, 
+                                           (dist.matrix[which(dataNursingHomesNorm$nursing_home == 0),
+                                                          which(dataNursingHomesNorm$nursing_home == 1)])^2,
+                                           2)
+period.1.stats.wasser[2, ] <- wasserDistance(trimmied.sample.euc.1$trimmedMajorityClass.weight, trimmied.sample.euc.1$trimmedMinorityClass.weight,
+                                           (dist.matrix[trimmied.sample.euc.1$trimmedMajorityClass, trimmied.sample.euc.1$trimmedMinorityClass])^2,
+                                           2)
+period.1.stats.wasser[3, ] <- wasserDistance(trimmied.sample.euc.2$trimmedMajorityClass.weight, trimmied.sample.euc.2$trimmedMinorityClass.weight,
+                                           (dist.matrix[trimmied.sample.euc.2$trimmedMajorityClass, trimmied.sample.euc.2$trimmedMinorityClass])^2,
+                                           2)
+period.1.stats.wasser[4, ] <- wasserDistance(trimmied.sample.prop.1$trimmedMajorityClass.weight, trimmied.sample.prop.1$trimmedMinorityClass.weight,
+                                           (dist.matrix[trimmied.sample.prop.1$trimmedMajorityClass, trimmied.sample.prop.1$trimmedMinorityClass])^2,
+                                           2)
+period.1.stats.wasser[5, ] <- wasserDistance(trimmied.sample.prop.2$trimmedMajorityClass.weight, trimmied.sample.prop.2$trimmedMinorityClass.weight,
+                                           (dist.matrix[trimmied.sample.prop.2$trimmedMajorityClass, trimmied.sample.prop.2$trimmedMinorityClass])^2,
+                                           2)
+A.1 <- weight.g.propensity[which(dataNursingHomesNorm$nursing_home == 0), 1]
+A.1 <- A.1 / sum(A.1)
+B.1 <- weight.g.propensity[which(dataNursingHomesNorm$nursing_home == 1), 1]
+B.1 <- B.1 / sum(B.1)
+period.1.stats.wasser[6, ] <- wasserDistance(A.1, B.1, 
+                                           (dist.matrix[which(dataNursingHomesNorm$nursing_home == 0),
+                                                          which(dataNursingHomesNorm$nursing_home == 1)])^2,
+                                           2)
+rownames(period.1.stats.wasser) <- c("Unmatched", "Matched Euc", "Matched Euc 2", "Matched Prop", "Matched Prop 2", "Inverse Weighting")
+colnames(period.1.stats.wasser) <- c("2-Wasserstein")
+period.1.stats.wasser
+```
+In all measures, we see a clear reduction in the distance in multivariate space between the residents and non-resident's joint distributions. Hence, we do have more similar samples after applying the previously described methods.
+
+# Conclusions
+
+In this fictitious example, the ATE estimates show that there is strong discrimination against nursing home residents, since they are much lees likely to be hospitalised than their non-residents counterparts. However, one must be cautious because of residual confounding due to joint distributions not being exactly the same and due to unobserved confounding. The latter is addressed with the methods presented in @sensAnalysis in Propensity score estimation and Sensitivity Analysis for bias in Nursing Homes.   
+
+# References
