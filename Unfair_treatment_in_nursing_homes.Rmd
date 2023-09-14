@@ -6,25 +6,12 @@ output: html_document
 references:
 - id: biasNursing
   title: 'A study on group fairness in healthcare outcomes for nursing home residents during the COVID-19 pandemic in the Basque Country'
-  author:
-  - family: Inouzhe
-    given: Hristo
-  - family: Barrio
-    given: Irantzu
-  - family: Rodríguez-Álvarez
-    given: María Xosé
-  - family: Gordaliza
-    given: Paula
-  - family: Bengoechea
-    given: Itxaso
-  - family: Quintana
-    given: José María
   URL: 'https://arxiv.org/abs'
   type: article-journal
   issued:
     year: 2023
 - id: sensAnalysis
-  title: 'Sense and sensitivity analysis: Simple post-hoc analysis of bias due to unobserved confounding'
+  title: 'Impact of nursing home status on healthcare outcomes: the Basque Country's case during the COVID-19 pandemic'
   author:
   - family: Veitch
     given: Victor
